@@ -105,24 +105,21 @@ tab1, tab2, tab3 = st.tabs(["🔭 Telescope (Deep Dive)", "💎 Diamond Hands (P
 with tab1:
     @st.cache_data(ttl=1800)
     def get_data(ticker_symbol):
-        try:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=730)
-            df = yf.download(ticker_symbol, start=start_date, end=end_date)
-            if df.empty: return None, None, None
-            if isinstance(df.columns, pd.MultiIndex): df.columns = [col[0] for col in df.columns]
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=730)
+        df = yf.download(ticker_symbol, start=start_date, end=end_date)
+        if df.empty: return None, None, None
+        if isinstance(df.columns, pd.MultiIndex): df.columns = [col[0] for col in df.columns]
 
-            df['SMA_50'] = df['Close'].rolling(window=50).mean()
-            df['SMA_200'] = df['Close'].rolling(window=200).mean()
-            df['RSI_14'] = calculate_rsi(df)
-            df['MACD_12_26_9'], df['MACDs_12_26_9'] = calculate_macd(df)
-            
-            stock = yf.Ticker(ticker_symbol)
-            info = stock.info
-            news = get_recent_news(ticker_symbol, days=10)
-            return df, news, info
-        except Exception as e:
-            return None, None, None
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['SMA_200'] = df['Close'].rolling(window=200).mean()
+        df['RSI_14'] = calculate_rsi(df)
+        df['MACD_12_26_9'], df['MACDs_12_26_9'] = calculate_macd(df)
+        
+        stock = yf.Ticker(ticker_symbol)
+        info = stock.info
+        news = get_recent_news(ticker_symbol, days=10)
+        return df, news, info
 
     data, recent_news, company_info = get_data(ticker)
 
