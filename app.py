@@ -12,6 +12,7 @@ import feedparser
 from dateutil import parser as date_parser
 import json
 import os
+import time
 
 # --- Config & Setup ---
 PORTFOLIO_FILE = "portfolio.json"
@@ -22,28 +23,25 @@ def load_portfolio():
         try:
             with open(PORTFOLIO_FILE, "r") as f:
                 return json.load(f)
-        except:
-            return {}
+        except: return {}
     return {}
 
 def save_portfolio(portfolio):
     with open(PORTFOLIO_FILE, "w") as f:
         json.dump(portfolio, f)
 
+@st.cache_data(ttl=1800)
 def get_recent_news(ticker_symbol, days=10):
     url = f"https://news.google.com/rss/search?q={ticker_symbol}+stock+when:{days}d&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(url)
     news_items = []
     for entry in feed.entries[:15]:
-        try:
-            pub_date = date_parser.parse(entry.published).strftime('%Y-%m-%d %H:%M')
-        except:
-            pub_date = "Unknown Date"
+        try: pub_date = date_parser.parse(entry.published).strftime('%Y-%m-%d %H:%M')
+        except: pub_date = "Unknown Date"
         news_items.append({
             'title': entry.title,
             'publisher': entry.source.title if hasattr(entry, 'source') else 'Google News',
-            'link': entry.link,
-            'published': pub_date
+            'link': entry.link, 'published': pub_date
         })
     return news_items
 
@@ -62,6 +60,52 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     macd = exp1 - exp2
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
+
+# --- CACHED DATA FETCHERS TO PREVENT RATE LIMITING ---
+
+@st.cache_data(ttl=1800)
+def get_deep_dive_data(ticker_symbol):
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=730)
+    df = yf.download(ticker_symbol, start=start_date, end=end_date, progress=False)
+    if df.empty: return None, None, None
+    if isinstance(df.columns, pd.MultiIndex): df.columns = [col[0] for col in df.columns]
+
+    df['SMA_50'] = df['Close'].rolling(window=50).mean()
+    df['SMA_200'] = df['Close'].rolling(window=200).mean()
+    df['RSI_14'] = calculate_rsi(df)
+    df['MACD_12_26_9'], df['MACDs_12_26_9'] = calculate_macd(df)
+    
+    stock = yf.Ticker(ticker_symbol)
+    try: info = stock.info
+    except: info = {}
+    news = get_recent_news(ticker_symbol, days=10)
+    return df, news, info
+
+@st.cache_data(ttl=900)
+def get_portfolio_prices(tickers):
+    if not tickers: return pd.DataFrame()
+    return yf.download(tickers, period="1d", group_by='ticker', progress=False)
+
+@st.cache_data(ttl=3600)
+def get_risk_historical_data(tickers):
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365)
+    spy_data = yf.download("SPY", start=start_date, end=end_date, progress=False)['Close']
+    if isinstance(spy_data, pd.DataFrame): spy_data = spy_data.iloc[:, 0]
+    
+    if not tickers: return spy_data, pd.DataFrame()
+    port_data = yf.download(tickers, start=start_date, end=end_date, progress=False)['Close']
+    return spy_data, port_data
+
+@st.cache_data(ttl=86400)
+def get_company_sector(ticker_symbol):
+    try:
+        time.sleep(0.5) 
+        return yf.Ticker(ticker_symbol).info.get('sector', 'Unknown')
+    except:
+        return 'Unknown'
+
 
 # --- App Initialization ---
 st.set_page_config(page_title="Moon Mission Control", layout="wide", page_icon="🚀")
@@ -103,25 +147,11 @@ tab1, tab2, tab3 = st.tabs(["🔭 Telescope (Deep Dive)", "💎 Diamond Hands (P
 # TAB 1: DEEP DIVE ANALYSIS
 # ==============================================================================
 with tab1:
-    @st.cache_data(ttl=1800)
-    def get_data(ticker_symbol):
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=730)
-        df = yf.download(ticker_symbol, start=start_date, end=end_date)
-        if df.empty: return None, None, None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = [col[0] for col in df.columns]
-
-        df['SMA_50'] = df['Close'].rolling(window=50).mean()
-        df['SMA_200'] = df['Close'].rolling(window=200).mean()
-        df['RSI_14'] = calculate_rsi(df)
-        df['MACD_12_26_9'], df['MACDs_12_26_9'] = calculate_macd(df)
-        
-        stock = yf.Ticker(ticker_symbol)
-        info = stock.info
-        news = get_recent_news(ticker_symbol, days=10)
-        return df, news, info
-
-    data, recent_news, company_info = get_data(ticker)
+    try:
+        data, recent_news, company_info = get_deep_dive_data(ticker)
+    except Exception as e:
+        st.error("⚠️ YFinance Rate Limit Hit! Yahoo Finance has temporarily blocked your IP for making too many requests. Please wait a few minutes before trying again.")
+        data, recent_news, company_info = None, None, None
 
     if data is not None and not data.empty:
         if company_info:
@@ -158,30 +188,17 @@ with tab1:
             st.subheader("Historical Price, Volume & Regimes")
             chart_data = data.tail(252)
             
-            # Interactive Subplots (Price + Volume)
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                vertical_spacing=0.03, row_width=[0.2, 0.7])
-            
-            # Price Candlestick
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2, 0.7])
             fig.add_trace(go.Candlestick(x=chart_data.index, open=chart_data['Open'], high=chart_data['High'], low=chart_data['Low'], close=chart_data['Close'], name='Price'), row=1, col=1)
             
-            # Moving Averages
             if 'SMA_50' in chart_data.columns: fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA_50'], line=dict(color='blue', width=1.5), name='SMA 50'), row=1, col=1)
             if 'SMA_200' in chart_data.columns: fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA_200'], line=dict(color='red', width=1.5), name='SMA 200'), row=1, col=1)
             
-            # Volume Bar Chart
             if 'Volume' in chart_data.columns:
                 colors = ['green' if row['Close'] >= row['Open'] else 'red' for index, row in chart_data.iterrows()]
                 fig.add_trace(go.Bar(x=chart_data.index, y=chart_data['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
             
-            # Make it super interactive with x-unified hovermode and rangeslider
-            fig.update_layout(
-                template='plotly_dark', 
-                height=650, 
-                margin=dict(l=0, r=0, t=10, b=0),
-                hovermode='x unified',
-                xaxis_rangeslider_visible=False # Keep false for cleaner UI, use mouse to zoom
-            )
+            fig.update_layout(template='plotly_dark', height=650, margin=dict(l=0, r=0, t=10, b=0), hovermode='x unified', xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
 
         with news_col:
@@ -235,7 +252,7 @@ with tab1:
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     else:
-        st.warning("Data not found. Please check ticker.")
+        st.warning("Data not found or Yahoo Finance Rate Limit active. Please try again later.")
 
 
 # ==============================================================================
@@ -262,6 +279,7 @@ with tab2:
             save_portfolio(portfolio)
             st.success(f"Loaded {p_ticker} into the cargo bay! 🚀")
             st.balloons()
+            st.rerun()
 
     st.markdown("---")
     
@@ -269,8 +287,9 @@ with tab2:
         st.subheader("Current Holdings & Performance")
         tickers = list(portfolio.keys())
         try:
-            px_data = yf.download(tickers, period="1d", group_by='ticker')
-        except:
+            px_data = get_portfolio_prices(tickers)
+        except Exception as e:
+            st.error("Hit Yahoo Finance Rate Limit! Prices might be stale.")
             px_data = pd.DataFrame()
 
         portfolio_data = []
@@ -284,12 +303,10 @@ with tab2:
             
             current_price = avg_price
             try:
-                if len(tickers) == 1:
-                    current_price = float(px_data['Close'].iloc[-1])
-                else:
-                    current_price = float(px_data['Close'][t].iloc[-1])
-            except:
-                pass
+                if not px_data.empty:
+                    if len(tickers) == 1: current_price = float(px_data['Close'].iloc[-1])
+                    else: current_price = float(px_data['Close'][t].iloc[-1])
+            except: pass
             
             current_val = shares * current_price
             pl_dollars = current_val - invested
@@ -340,27 +357,22 @@ with tab3:
         st.write("Analyzing risk for:", ", ".join(tickers))
         
         with st.spinner("Calculating Portfolio Beta, Sector info, and Value at Risk (VaR)..."):
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=365)
-            
-            spy_data = yf.download("SPY", start=start_date, end=end_date)['Close']
-            if isinstance(spy_data, pd.DataFrame): spy_data = spy_data.iloc[:, 0]
-            spy_returns = spy_data.pct_change().dropna()
+            try:
+                spy_returns_data, port_data = get_risk_historical_data(tickers)
+                spy_returns = spy_returns_data.pct_change().dropna()
+            except Exception as e:
+                st.error("⚠️ Hit Yahoo Finance Rate Limit. Cannot fetch historical data for Risk calculations.")
+                spy_returns_data, port_data, spy_returns = None, pd.DataFrame(), pd.Series()
             
             port_sectors = {}
             betas = {}
             var_95 = {}
             current_vals = {}
             
-            try: port_data = yf.download(tickers, start=start_date, end=end_date)['Close']
-            except: port_data = pd.DataFrame()
-            
             for t in tickers:
-                try: port_sectors[t] = yf.Ticker(t).info.get('sector', 'Unknown')
-                except: port_sectors[t] = 'Unknown'
+                port_sectors[t] = get_company_sector(t)
                 
                 try:
-                    # Current value for VaR dollar calculation
                     if len(tickers) == 1: current_vals[t] = portfolio[t]['shares'] * float(port_data.iloc[-1])
                     else: current_vals[t] = portfolio[t]['shares'] * float(port_data[t].iloc[-1])
                 except:
@@ -368,8 +380,6 @@ with tab3:
                 
                 try:
                     asset_returns = port_data.pct_change().dropna() if len(tickers) == 1 else port_data[t].pct_change().dropna()
-                    
-                    # 95% Historical Daily VaR
                     percentile_5 = np.percentile(asset_returns, 5)
                     var_dollar = abs(percentile_5 * current_vals[t])
                     var_95[t] = {"pct": abs(percentile_5)*100, "dollar": var_dollar}
@@ -400,11 +410,8 @@ with tab3:
             total_var_dollar = 0
             for t in tickers:
                 metrics_data.append({
-                    "Ticker": t, 
-                    "Sector": port_sectors[t],
-                    "Beta (1Y)": f"{betas[t]:.2f}", 
-                    "95% Daily VaR (%)": f"{var_95[t]['pct']:.2f}%",
-                    "95% Daily VaR ($)": f"${var_95[t]['dollar']:,.2f}"
+                    "Ticker": t, "Sector": port_sectors[t], "Beta (1Y)": f"{betas[t]:.2f}", 
+                    "95% Daily VaR (%)": f"{var_95[t]['pct']:.2f}%", "95% Daily VaR ($)": f"${var_95[t]['dollar']:,.2f}"
                 })
                 total_var_dollar += var_95[t]['dollar']
                 
