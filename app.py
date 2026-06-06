@@ -247,8 +247,19 @@ with tab1:
                         3. **Growth Expectation & Verdict**: Aggressive growth forecast and Buy/Hold/Sell verdict.
                         """
                         client = genai.Client(api_key=api_key)
-                        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-                        st.markdown(response.text)
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+                                st.markdown(response.text)
+                                break
+                            except Exception as e:
+                                if "503" in str(e) and attempt < max_retries - 1:
+                                    time.sleep(2 ** attempt)  # Wait 1s, then 2s before retrying
+                                    continue
+                                else:
+                                    st.error(f"⚠️ Google Gemini API Error: The AI model is currently experiencing high demand. Please wait a moment and try again.\n\nDetails: {str(e)}")
+                                    break
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     else:
@@ -452,7 +463,18 @@ with tab3:
                         3. **Risk Mitigation Strategy**: Provide actionable advice to hedge or rebalance this portfolio.
                         """
                         client = genai.Client(api_key=api_key)
-                        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-                        st.markdown(response.text)
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+                                st.markdown(response.text)
+                                break
+                            except Exception as e:
+                                if "503" in str(e) and attempt < max_retries - 1:
+                                    time.sleep(2 ** attempt)
+                                    continue
+                                else:
+                                    st.error(f"⚠️ Google Gemini API Error: The AI model is currently experiencing high demand. Please wait a moment and try again.\n\nDetails: {str(e)}")
+                                    break
                     except Exception as e:
                         st.error(f"Error generating Risk Report: {str(e)}")
