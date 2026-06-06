@@ -124,7 +124,9 @@ if not st.session_state['logged_in']:
             password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Ignite Engines 🚀")
             if submitted:
-                if username.strip().lower() == "halorio" and password.strip() == "admin123":
+                correct_user = st.secrets.get("APP_USERNAME", "halorio")
+                correct_pass = st.secrets.get("APP_PASSWORD", "admin123")
+                if username.strip().lower() == correct_user.lower() and password.strip() == correct_pass:
                     st.session_state['logged_in'] = True
                     st.rerun()
                 else:
@@ -315,8 +317,9 @@ with tab2:
             current_price = avg_price
             try:
                 if not px_data.empty:
-                    if len(tickers) == 1: current_price = float(px_data['Close'].iloc[-1])
-                    else: current_price = float(px_data['Close'][t].iloc[-1])
+                    if len(tickers) == 1: cp = float(px_data['Close'].iloc[-1])
+                    else: cp = float(px_data['Close'][t].iloc[-1])
+                    if not pd.isna(cp): current_price = cp
             except: pass
             
             current_val = shares * current_price
@@ -383,11 +386,13 @@ with tab3:
             for t in tickers:
                 port_sectors[t] = get_company_sector(t)
                 
+                current_vals[t] = portfolio[t]['shares'] * portfolio[t]['avg_price']
                 try:
-                    if len(tickers) == 1: current_vals[t] = portfolio[t]['shares'] * float(port_data.iloc[-1])
-                    else: current_vals[t] = portfolio[t]['shares'] * float(port_data[t].iloc[-1])
+                    if len(tickers) == 1: cp = float(port_data.iloc[-1])
+                    else: cp = float(port_data[t].iloc[-1])
+                    if not pd.isna(cp): current_vals[t] = portfolio[t]['shares'] * cp
                 except:
-                    current_vals[t] = portfolio[t]['shares'] * portfolio[t]['avg_price']
+                    pass
                 
                 try:
                     asset_returns = port_data.pct_change().dropna() if len(tickers) == 1 else port_data[t].pct_change().dropna()
